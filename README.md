@@ -1,4 +1,4 @@
-# squeuelite
+# squeuelite [![Go](https://github.com/nfoerster/squeuelite/actions/workflows/go.yml/badge.svg)](https://github.com/nfoerster/squeuelite/actions/workflows/go.yml)
 
 ## Description
 
