@@ -115,9 +115,9 @@ func (lq *SQueueLite) init() error {
 	if _, err = lq.conn.Exec(`
         CREATE TABLE IF NOT EXISTS Queue
         (
-          Data      TEXT    NOT NULL,
-          MessageID TEXT    NOT NULL,
-          Status    INTEGER NOT NULL,
+          data      TEXT    NOT NULL,
+          messageID TEXT    NOT NULL,
+          status    INTEGER NOT NULL,
           inTime    INTEGER NOT NULL,
           lockTime  INTEGER NOT NULL,
           doneTime  INTEGER NOT NULL,
@@ -146,18 +146,18 @@ func (lq *SQueueLite) init() error {
 	return nil
 }
 
-func (lq *SQueueLite) Put(Data string) error {
+func (lq *SQueueLite) Put(data string) error {
 	uuid, err := uuid.NewUUID()
 	if err != nil {
 		return err
 	}
-	MessageID := uuid.String()
+	messageID := uuid.String()
 	now := time.Now().UnixNano()
 	_, err = lq.conn.Exec(`
 			INSERT INTO
-			  Queue(  Data,  MessageID, Status, inTime, lockTime, doneTime )
+			  Queue(  data,  messageID, status, inTime, lockTime, doneTime )
 			VALUES ( ?, ?, ?, ?, 0, 0 )
-			`, []driver.Value{Data, MessageID, READY, now},
+			`, []driver.Value{data, messageID, READY, now},
 	)
 	if err != nil {
 		return err
@@ -167,7 +167,7 @@ func (lq *SQueueLite) Put(Data string) error {
 }
 
 func (lq *SQueueLite) Peek() (*Message, error) {
-	row, err := lq.conn.Query("SELECT * FROM Queue WHERE Status = ? ORDER BY inTime ASC LIMIT 1", []driver.Value{READY})
+	row, err := lq.conn.Query("SELECT * FROM Queue WHERE status = ? ORDER BY inTime ASC LIMIT 1", []driver.Value{READY})
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +197,7 @@ func (lq *SQueueLite) Peek() (*Message, error) {
 }
 
 func (lq *SQueueLite) PeekBlock() (*Message, error) {
-	row, err := lq.conn.Query("SELECT * FROM Queue WHERE Status = ? ORDER BY inTime ASC LIMIT 1", []driver.Value{READY})
+	row, err := lq.conn.Query("SELECT * FROM Queue WHERE status = ? ORDER BY inTime ASC LIMIT 1", []driver.Value{READY})
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +221,7 @@ func (lq *SQueueLite) PeekBlock() (*Message, error) {
 				}
 			}
 
-			row2, err := lq.conn.Query("SELECT * FROM Queue WHERE Status = ? ORDER BY inTime ASC LIMIT 1", []driver.Value{READY})
+			row2, err := lq.conn.Query("SELECT * FROM Queue WHERE status = ? ORDER BY inTime ASC LIMIT 1", []driver.Value{READY})
 			if err != nil {
 				return nil, err
 			}
@@ -244,8 +244,8 @@ func (lq *SQueueLite) PeekBlock() (*Message, error) {
 	return &message, nil
 }
 
-func (lq *SQueueLite) Get(MessageID string) (*Message, error) {
-	row, err := lq.conn.Query("SELECT * FROM Queue WHERE MessageID = ?", []driver.Value{MessageID})
+func (lq *SQueueLite) Get(messageID string) (*Message, error) {
+	row, err := lq.conn.Query("SELECT * FROM Queue WHERE messageID = ?", []driver.Value{messageID})
 	if err != nil {
 		return nil, err
 	}
@@ -267,15 +267,15 @@ func (lq *SQueueLite) Get(MessageID string) (*Message, error) {
 	return &message, nil
 }
 
-func (lq *SQueueLite) Done(MessageID string) error {
+func (lq *SQueueLite) Done(messageID string) error {
 	now := time.Now().UnixNano()
 
 	_, err := lq.conn.Exec(`
         UPDATE Queue SET
-            Status = ?
+            status = ?
             , doneTime = ?
-        WHERE MessageID = ?
-    `, []driver.Value{DONE, now, MessageID})
+        WHERE messageID = ?
+    `, []driver.Value{DONE, now, messageID})
 
 	if err != nil {
 		return err
@@ -284,15 +284,15 @@ func (lq *SQueueLite) Done(MessageID string) error {
 	return nil
 }
 
-func (lq *SQueueLite) MarkFailed(MessageID int) error {
+func (lq *SQueueLite) MarkFailed(messageID string) error {
 	now := time.Now().UnixNano()
 
 	_, err := lq.conn.Exec(`
         UPDATE Queue SET
-            Status = ?
+            status = ?
             , doneTime = ?
-        WHERE MessageID = ?
-    `, []driver.Value{FAILED, now, MessageID})
+        WHERE messageID = ?
+    `, []driver.Value{FAILED, now, messageID})
 
 	if err != nil {
 		return err
@@ -307,7 +307,7 @@ func (lq *SQueueLite) ListLocked(threshold_seconds int) ([]Message, error) {
 	rows, err := lq.conn.Query(`
         SELECT * FROM Queue
         WHERE
-            Status = ?
+            status = ?
             AND lockTime < ?
     `, []driver.Value{LOCKED, time.Now().UnixNano() - threshold_nanoseconds})
 	if err != nil {
@@ -338,13 +338,13 @@ func (lq *SQueueLite) ListLocked(threshold_seconds int) ([]Message, error) {
 	return messages, nil
 }
 
-func (lq *SQueueLite) Retry(MessageID int) error {
+func (lq *SQueueLite) Retry(messageID string) error {
 	_, err := lq.conn.Exec(`
         UPDATE Queue SET
-            Status = ?
-            , doneTime = NULL
-        WHERE MessageID = ?
-    `, []driver.Value{READY, MessageID})
+            status = ?
+            , doneTime = 0
+        WHERE messageID = ?
+    `, []driver.Value{READY, messageID})
 
 	if err != nil {
 		return err
@@ -355,9 +355,9 @@ func (lq *SQueueLite) Retry(MessageID int) error {
 func (lq *SQueueLite) RetryFailed() error {
 	result, err := lq.conn.Exec(`
         UPDATE Queue SET
-            Status = ?
-            , doneTime = NULL
-        WHERE Status = ?
+            status = ?
+            , doneTime = 0
+        WHERE status = ?
     `, []driver.Value{READY, FAILED})
 	if err != nil {
 		return err
@@ -381,7 +381,7 @@ func (lq *SQueueLite) Qsize() (int, error) {
 	var count int
 	rows, err := lq.conn.Query(`
         SELECT COUNT(*) FROM Queue
-        WHERE Status NOT IN (?, ?)
+        WHERE status NOT IN (?, ?)
     `, []driver.Value{DONE, FAILED})
 	if err != nil {
 		return -1, err
@@ -399,7 +399,7 @@ func (lq *SQueueLite) Qsize() (int, error) {
 func (lq *SQueueLite) Empty() (bool, error) {
 	var count int
 	rows, err := lq.conn.Query(`
-        SELECT COUNT(*) as cnt FROM Queue WHERE Status = ?
+        SELECT COUNT(*) as cnt FROM Queue WHERE status = ?
     `, []driver.Value{READY})
 	if err != nil {
 		return false, err
@@ -417,7 +417,7 @@ func (lq *SQueueLite) Empty() (bool, error) {
 func (lq *SQueueLite) Full() (bool, error) {
 	var count int
 	rows, err := lq.conn.Query(fmt.Sprintf(`
-        SELECT COUNT(*) as cnt FROM Queue WHERE Status = %v
+        SELECT COUNT(*) as cnt FROM Queue WHERE status = %v
     `, READY), []driver.Value{})
 	if err != nil {
 		return false, err
@@ -433,7 +433,7 @@ func (lq *SQueueLite) Full() (bool, error) {
 }
 
 func (lq *SQueueLite) Prune() error {
-	_, err := lq.conn.Exec("DELETE FROM Queue WHERE Status IN (?, ?)", []driver.Value{DONE, FAILED})
+	_, err := lq.conn.Exec("DELETE FROM Queue WHERE status IN (?, ?)", []driver.Value{DONE, FAILED})
 	if err != nil {
 		return err
 	}

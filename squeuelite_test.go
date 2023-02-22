@@ -228,12 +228,13 @@ func TestLoad(t *testing.T) {
 func TestMultithreading(t *testing.T) {
 	os.Remove(".queue.db")
 	os.Remove(".queue.db-journal")
-	defer os.Remove(".queue.db")
-	defer os.Remove(".queue.db-journal")
-	queue, err := NewSQueueLiteWithTimeout(".queue", false, 100000, 2)
+	queue, err := NewSQueueLiteWithTimeout(".queue", false, 1000, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer queue.Close()
+	defer os.Remove(".queue.db")
+	defer os.Remove(".queue.db-journal")
 	wg := sync.WaitGroup{}
 	//producers
 	for i := 0; i < 10; i++ {
@@ -294,4 +295,102 @@ func TestMultithreading(t *testing.T) {
 		wg.Add(1)
 	}
 	wg.Wait()
+}
+
+func TestRetry(t *testing.T) {
+	os.Remove(".queue.db")
+	os.Remove(".queue.db-journal")
+	queue, err := NewSQueueLite(".queue", true, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Close()
+	defer os.Remove(".queue.db")
+	defer os.Remove(".queue.db-journal")
+	err = queue.Put("TestRetry")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := queue.Peek()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = queue.MarkFailed(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = queue.Peek()
+	if err == nil {
+		t.Fatal("should be an ErrNoRows error")
+	} else if err != sql.ErrNoRows {
+		t.Fatal(err)
+	}
+
+	err = queue.Retry(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err = queue.Peek()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Data != "TestRetry" {
+		t.Fatal("msg.Data should be TestRetry")
+	}
+	err = queue.Done(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = queue.Put("TestRetry2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = queue.Put("TestRetry3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err = queue.Peek()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Data != "TestRetry2" {
+		t.Fatal("msg.Data should be TestRetry2")
+	}
+	err = queue.Done(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err = queue.Peek()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = queue.MarkFailed(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = queue.RetryFailed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err = queue.PeekBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Data != "TestRetry3" {
+		t.Fatal("msg.Data should be TestRetry3")
+	}
+	err = queue.Done(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err = queue.Peek()
+	if err == nil {
+		t.Fatal("should be an ErrNoRows error")
+	} else if err != sql.ErrNoRows {
+		t.Fatal(err)
+	}
 }
