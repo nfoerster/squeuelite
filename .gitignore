@@ -1,2 +1,2 @@
-.queue.db
-.queue.db-journal
+*.db
+*.db-journal

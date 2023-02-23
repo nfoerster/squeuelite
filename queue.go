@@ -2,56 +2,60 @@ package squeuelite
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"sync/atomic"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-type PQueue struct {
-	conn           *sql.DB
-	maxsize        int64
-	selmsg string
-	selnext string
-	insert string
+type SQueue struct {
+	conn     *sql.DB
+	notify chan int
+	internal chan *PMessage
+	subscribed bool 
+
+	insert   string
+	update string
+	nextfree string
 }
 
-func NewPQueue(connStr string, maxsize int64) (*PQueue, error) {
+
+func NewSQueue(connStr string) (*SQueue, error) {
 	// file:test.db?cache=shared&mode=memory&_auto_vacuum=2&_journal_mode=wal
 	conn, err := sql.Open("sqlite3", connStr)
 	if err != nil {
 		return nil, err
 	}
-
-	lq := &PQueue{
-		conn:           conn,
-		maxsize:        maxsize,
-		selmsg:		"select message_id, status, data from queue where message_id = ?",
-		selnext:	"select message_id, status, data from queue where status = ? order by message_id asc limit 1",
-		insert:		"insert into queue( status, data, in_time ) VALUES ( ?, ? , unixepoch())",
+	
+	lq := &SQueue{
+		conn:     conn,
+		notify: make(chan int, 10),
+		internal: make(chan *PMessage, 10),
+		insert:   "insert into queue( status, data, in_time ) VALUES ( ?, ? , unixepoch()) returning message_id, status, data",
+		update: "UPDATE queue SET status = ?, done_time = unixepoch() WHERE message_id = ?",
+		nextfree: "UPDATE queue SET status = ? where message_id = (Select message_id from queue where status = ? order by message_id asc limit 1) returning message_id, status, data",
 	}
 
 	if err = lq.init(); err != nil {
 		return nil, err
 	}
 
+	// if starting from populated queue we are starting with capacity in notify
+	row := conn.QueryRow("select count(*) from queue where status <> ?", DONE)
+        if row.Err() != nil {
+		return nil, row.Err() 
+	}
+	queuelen := 0
+	row.Scan(&queuelen)
+	lq.notify <- queuelen
+	//start notification
+	go lq.Pump()
 	return lq, nil
 }
 
-func (lq *PQueue) init() error {
-	tx, err := lq.conn.Begin()
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		if err != nil {
-			tx.Rollback()
-		} else {
-			err = tx.Commit()
-		}
-	}()
-
-	_, err = lq.conn.Exec(`
+func (lq *SQueue) init() error {
+	_, err := lq.conn.Exec(`
 		CREATE TABLE IF NOT EXISTS queue (
 	            message_id  INTEGER PRIMARY KEY
 		  , status      INTEGER NOT NULL
@@ -62,14 +66,166 @@ func (lq *PQueue) init() error {
 		)`)
 
 	if err != nil {
-		return err 
+		return err
 	}
 
-	//if _, err = lq.conn.Exec("CREATE INDEX IF NOT EXISTS SIdx ON Queue(Status)", []driver.Value{}); err != nil {
-	//	return err
-	//}
+	return nil
+}
 
-	// would need an index for this but we expect that we do not have thousands of records here 
+
+func (lq *SQueue) Next() (*PMessage, error) {
+	row := lq.conn.QueryRow(lq.nextfree, LOCKED, READY)
+	if row.Err() != nil {
+		return nil, row.Err()
+	}
+
+	msg := &PMessage{}
+	err := row.Scan(&msg.MessageID, &msg.Status, &msg.Data)
+	if err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
+func (lq *SQueue) Pump() error {
+	for nmsgs := range lq.notify {
+		for ii := 0; ii < nmsgs; ii++ {
+			nm, err := lq.Next()
+			// Keep Message Pump going, probably should read more than one from storage
+			if err != nil {
+				return err
+			}
+			lq.internal <- nm
+		}
+	}
+	return nil
+}
+
+func (lq *SQueue) Subscribe(cb func(*PMessage) error) error {
+        if lq.subscribed {
+		return errors.New("already subscribed cannot have multiple subs")
+	}
+
+	lq.subscribed = true
+
+	go func() {
+		for msg := range lq.internal {
+			err := cb(msg)
+			if err != nil {
+				ierr := lq.StatusChange(msg.MessageID, FAILED)
+				if ierr != nil {
+				     fmt.Println("error during marking", ierr)
+				}
+				// add to notify channel again to retry?
+			} else {
+				ierr := lq.StatusChange(msg.MessageID, DONE)
+				if ierr != nil {
+					fmt.Println("erro during done", ierr)
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (lq *SQueue) Put(data []byte) error {
+	row := lq.conn.QueryRow(lq.insert, READY, data)
+	if row.Err() != nil {
+		return row.Err()
+	}
+
+	msg := &PMessage{}
+	err := row.Scan(&msg.MessageID, &msg.Status, &msg.Data)
+	if err != nil {
+		return err
+	}
+	lq.notify <- 1
+	return nil
+}
+
+
+func (lq *SQueue) StatusChange(messageID int64, state int64) error {
+	_, err := lq.conn.Exec(lq.update, state, messageID)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (lq *SQueue) Close() {
+	close(lq.notify)
+}
+
+type PQueue struct {
+	conn     *sql.DB
+	internal chan *PMessage
+	subscribed bool 
+	queuelen int64
+	maxsize  int64
+
+	// sql as struct members feels wrong
+	selmsg   string
+	selnext  string
+	selnextbatch string
+	insert   string
+	update string
+	nextfree string
+}
+
+func NewPQueue(connStr string, maxsize int64) (*PQueue, error) {
+	// file:test.db?cache=shared&mode=memory&_auto_vacuum=2&_journal_mode=wal
+	conn, err := sql.Open("sqlite3", connStr)
+	if err != nil {
+		return nil, err
+	}
+	
+	lq := &PQueue{
+		conn:     conn,
+		maxsize:  maxsize,
+		queuelen: 0,
+		internal: make(chan *PMessage, 10),
+		selmsg:   "select message_id, status, data from queue where message_id = ?",
+		selnext:  "select message_id, status, data from queue where status = ? order by message_id asc limit 1",
+		selnextbatch:  "select message_id, status, data from queue where status = ? order by message_id asc limit 10",
+		insert:   "insert into queue( status, data, in_time ) VALUES ( ?, ? , unixepoch()) returning message_id, status, data",
+		update: "UPDATE queue SET status = ?, done_time = unixepoch() WHERE message_id = ?",
+		nextfree: "UPDATE queue SET status = ? where message_id = (Select message_id from queue where status = ? limit 1) returning message_id, status, data",
+	}
+
+	if err = lq.init(); err != nil {
+		return nil, err
+	}
+
+	// if starting from populated queue we are starting with capacity
+	row := conn.QueryRow("select count(*) from queue where status <> ?", DONE)
+        if row.Err() != nil {
+		return nil, row.Err() 
+	}
+
+	row.Scan(&lq.queuelen)
+
+	return lq, nil
+}
+
+func (lq *PQueue) init() error {
+	_, err := lq.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS queue (
+	            message_id  INTEGER PRIMARY KEY
+		  , status      INTEGER NOT NULL
+	          , in_time     INTEGER NOT NULL default 0
+		  , lock_time   INTEGER NOT NULL default 0 
+		  , done_time   INTEGER NOT NULL default 0 
+	          , data        TEXT    NOT NULL
+		)`)
+
+	if err != nil {
+		return err
+	}
+
+	// would need an index for this but we expect that we do not have thousands of records here
 	if lq.maxsize > 0 {
 		if _, err = lq.conn.Exec(fmt.Sprintf(`
             CREATE TRIGGER IF NOT EXISTS maxsize_control
@@ -86,17 +242,83 @@ func (lq *PQueue) init() error {
 	return nil
 }
 
-func (lq *PQueue) Put(data []byte) error {
-	_ , err := lq.conn.Exec(lq.insert, READY, data)
-	if err != nil {
-		return err
+func (lq *PQueue) Next() (*PMessage, error) {
+	row := lq.conn.QueryRow(lq.nextfree, LOCKED, READY)
+	if row.Err() != nil {
+		return nil, row.Err()
 	}
+
+	msg := &PMessage{}
+	err := row.Scan(&msg.MessageID, &msg.Status, &msg.Data)
+	if err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
+// Keep Message Pump going, probably should read more than one from storage
+func (lq *PQueue) Pump() error {
+	if lq.queuelen > 0 {
+		nm, err := lq.Next()
+		if err != nil {
+			return err
+		}
+		lq.internal <- nm
+	}
+	return nil
+}
+
+func (lq *PQueue) Subscribe(cb func(*PMessage) error) error {
+        if lq.subscribed {
+		return errors.New("already subscribed cannot have multiple subs")
+	}
+
+	lq.subscribed = true
+
+	go func() {
+		lq.Pump()
+		for msg := range lq.internal {
+			err := cb(msg)
+			if err != nil {
+				ierr := lq.MarkFailed(msg.MessageID)
+				if ierr != nil {
+				     fmt.Println("error during marking", ierr)
+				}
+			} else {
+				ierr := lq.Done(msg.MessageID)
+				if ierr != nil {
+					fmt.Println("erro during done", ierr)
+				}
+				atomic.AddInt64(&lq.queuelen,-1)
+			}
+			err = lq.Pump() 
+			if err != nil {
+				fmt.Println("error during pump", err)
+			}
+		}
+	}()
 
 	return nil
 }
 
+func (lq *PQueue) Put(data []byte) error {
+	row := lq.conn.QueryRow(lq.insert, READY, data)
+	if row.Err() != nil {
+		return row.Err()
+	}
+
+	msg := &PMessage{}
+	err := row.Scan(&msg.MessageID, &msg.Status, &msg.Data)
+	if err != nil {
+		return err
+	}
+	
+	atomic.AddInt64(&lq.queuelen, 1)
+	return nil
+}
+
 func (lq *PQueue) Peek() (*PMessage, error) {
-	row := lq.conn.QueryRow(lq.selnext, READY )
+	row := lq.conn.QueryRow(lq.selnext, READY)
 	if row.Err() != nil {
 		return nil, row.Err()
 	}
@@ -105,74 +327,23 @@ func (lq *PQueue) Peek() (*PMessage, error) {
 	return msg, nil
 }
 
-/*
-func (lq *PQueue) PeekBlock() (*PMessage, error) {
-	row, err := lq.conn.Query(lq.selnext, READY)
-	if err != nil {
-		return nil, err
-	}
-	defer row.Close()
-
-	message := PMessage{}
-	vals := []driver.Value{message.Data, message.MessageID, message.Status, message.inTime, message.lockTime, message.doneTime}
-	err = row.Next(vals)
-	if err != nil {
-		if err == io.EOF {
-			//explicitly wait for a notification
-			if lq.peekTimeoutSec == -1 {
-				//no timeout, continue processing
-				<-lq.notify
-			} else {
-				select {
-				case <-lq.notify:
-					//continue processing
-				case <-time.After(time.Duration(int64(lq.peekTimeoutSec) * int64(time.Second))):
-					return nil, sql.ErrNoRows
-				}
-			}
-
-			row2, err := lq.conn.Query("SELECT * FROM Queue WHERE status = ? ORDER BY inTime ASC LIMIT 1", []driver.Value{READY})
-			if err != nil {
-				return nil, err
-			}
-			defer row2.Close()
-			err = row2.Next(vals)
-			if err != nil && err != io.EOF {
-				return nil, err
-			}
-		} else {
-			return nil, err
-		}
-	}
-	message.Data = vals[0].(string)
-	message.MessageID = vals[1].(string)
-	message.Status = vals[2].(int64)
-	message.inTime = vals[3].(int64)
-	message.lockTime = vals[4].(int64)
-	message.doneTime = vals[5].(int64)
-
-	return &message, nil
-}
-*/
-
 func (lq *PQueue) Get(messageID int64) (*PMessage, error) {
-	row := lq.conn.QueryRow(lq.selmsg,  messageID)
+	row := lq.conn.QueryRow(lq.selmsg, messageID)
 	if row.Err() != nil {
 		return nil, row.Err()
 	}
 
 	msg := &PMessage{}
-
 	err := row.Scan(&msg.MessageID, &msg.Status, &msg.Data)
 	if err != nil {
-		return nil, err 
+		return nil, err
 	}
 
 	return msg, nil
 }
 
 func (lq *PQueue) Done(messageID int64) error {
-	_, err := lq.conn.Exec(`UPDATE queue SET status = ?, done_time = unixepoch() WHERE message_id = ?`,  DONE, messageID)
+	_, err := lq.conn.Exec(lq.update, DONE, messageID)
 
 	if err != nil {
 		return err
@@ -195,46 +366,6 @@ func (lq *PQueue) MarkFailed(messageID int64) error {
 
 	return nil
 }
-
-/*
-func (lq *PQueue) ListLocked(threshold_seconds int) ([]Message, error) {
-	threshold_nanoseconds := int64(threshold_seconds) * int64(time.Second)
-
-	rows, err := lq.conn.Query(`
-        SELECT * FROM Queue
-        WHERE
-            status = ?
-            AND lockTime < ?
-    `, []driver.Value{LOCKED, time.Now().UnixNano() - threshold_nanoseconds})
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	messages := []Message{}
-
-	for {
-		message := Message{}
-		vals := []driver.Value{message.Data, message.MessageID, message.Status, message.inTime, message.lockTime, message.doneTime}
-		err = rows.Next(vals)
-		if err != nil && err != io.EOF {
-			return nil, err
-		} else if err == io.EOF {
-			break
-		}
-		message.Data = vals[0].(string)
-		message.MessageID = vals[1].(string)
-		message.Status = vals[2].(int64)
-		message.inTime = vals[3].(int64)
-		message.lockTime = vals[4].(int64)
-		message.doneTime = vals[5].(int64)
-		messages = append(messages, message)
-	}
-
-	return messages, nil
-}
-*/
-
 func (lq *PQueue) Retry(messageID string) error {
 	_, err := lq.conn.Exec(`
         UPDATE Queue SET
@@ -248,7 +379,6 @@ func (lq *PQueue) Retry(messageID string) error {
 	}
 	return nil
 }
-
 
 func (lq *PQueue) Qsize() (int64, error) {
 	rows := lq.conn.QueryRow(`SELECT COUNT(*) FROM Queue WHERE status NOT IN (?, ?)`, DONE, FAILED)
@@ -266,9 +396,9 @@ func (lq *PQueue) Qsize() (int64, error) {
 func (lq *PQueue) Empty() (bool, error) {
 	count, err := lq.Qsize()
 	if err != nil {
-		return false, err 
+		return false, err
 	}
-	return count == 0, nil  
+	return count == 0, nil
 
 }
 
@@ -277,7 +407,7 @@ func (lq *PQueue) Full() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return count >= lq.maxsize, nil 
+	return count >= lq.maxsize, nil
 }
 
 func (lq *PQueue) Prune() error {

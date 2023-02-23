@@ -13,22 +13,6 @@ import (
 	sqlite3 "github.com/mattn/go-sqlite3"
 )
 
-const (
-	READY int64 = iota
-	LOCKED
-	DONE
-	FAILED
-)
-
-type Message struct {
-	Data      []byte
-	MessageID string
-	status    int64
-	inTime    int64
-	lockTime  int64
-	doneTime  int64
-}
-
 type SQueueLite struct {
 	conn           *sqlite3.SQLiteConn
 	maxsize        int

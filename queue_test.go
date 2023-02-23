@@ -2,8 +2,10 @@ package squeuelite
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
 func testQueueImplementation(t *testing.T, q WorkQueue) {
@@ -42,7 +44,7 @@ func testQueueImplementation(t *testing.T, q WorkQueue) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ! bytes.Equal(msg.Data, p2) {
+	if !bytes.Equal(msg.Data, p2) {
 		t.Fatalf("message payload was %v expected %v", msg.Data, p2)
 	}
 	size, err := q.Qsize()
@@ -132,4 +134,38 @@ func TestQueue(t *testing.T) {
 	}
 
 	testQueueImplementation(t, q)
+}
+
+
+func TestSubscriber(t *testing.T) {
+	q, err := NewSQueue("test_sub.db")
+	if err != nil {
+		t.Error(err)
+		t.FailNow()
+	}
+
+	nmsg := 10
+	go func() {
+		for ii := 0; ii < nmsg; ii++ {
+			payload := []byte(fmt.Sprintf("Test %v", ii))
+			err := q.Put(payload)
+			if err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+
+	count := 0 
+	err = q.Subscribe(func (m *PMessage) error {
+	        fmt.Println(m.Data)
+		count++
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
+	}
+	time.Sleep(1* time.Second)
+	if count != nmsg {
+		t.Error("did not receive ", nmsg ," messages, was: ", count)
+	}
 }
