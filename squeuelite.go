@@ -21,9 +21,9 @@ const (
 )
 
 type Message struct {
-	Data      string
+	Data      []byte
 	MessageID string
-	Status    int64
+	status    int64
 	inTime    int64
 	lockTime  int64
 	doneTime  int64
@@ -146,7 +146,7 @@ func (lq *SQueueLite) init() error {
 	return nil
 }
 
-func (lq *SQueueLite) Put(data string) error {
+func (lq *SQueueLite) Put(data []byte) error {
 	uuid, err := uuid.NewUUID()
 	if err != nil {
 		return err
@@ -157,7 +157,7 @@ func (lq *SQueueLite) Put(data string) error {
 			INSERT INTO
 			  Queue(  data,  messageID, status, inTime, lockTime, doneTime )
 			VALUES ( ?, ?, ?, ?, 0, 0 )
-			`, []driver.Value{data, messageID, READY, now},
+			`, []driver.Value{string(data), messageID, READY, now},
 	)
 	if err != nil {
 		return err
@@ -173,16 +173,16 @@ func (lq *SQueueLite) Peek() (*Message, error) {
 	}
 	defer row.Close()
 	message := Message{}
-	vals := []driver.Value{message.Data, message.MessageID, message.Status, message.inTime, message.lockTime, message.doneTime}
+	vals := []driver.Value{message.Data, message.MessageID, message.status, message.inTime, message.lockTime, message.doneTime}
 	err = row.Next(vals)
 	if err != nil && err != io.EOF {
 		return nil, err
 	} else if err == io.EOF {
 		return nil, sql.ErrNoRows
 	}
-	message.Data = vals[0].(string)
+	message.Data = []byte(vals[0].(string))
 	message.MessageID = vals[1].(string)
-	message.Status = vals[2].(int64)
+	message.status = vals[2].(int64)
 	message.inTime = vals[3].(int64)
 	message.lockTime = vals[4].(int64)
 	message.doneTime = vals[5].(int64)
@@ -204,7 +204,7 @@ func (lq *SQueueLite) PeekBlock() (*Message, error) {
 	defer row.Close()
 
 	message := Message{}
-	vals := []driver.Value{message.Data, message.MessageID, message.Status, message.inTime, message.lockTime, message.doneTime}
+	vals := []driver.Value{string(message.Data), message.MessageID, message.status, message.inTime, message.lockTime, message.doneTime}
 	err = row.Next(vals)
 	if err != nil {
 		if err == io.EOF {
@@ -234,9 +234,9 @@ func (lq *SQueueLite) PeekBlock() (*Message, error) {
 			return nil, err
 		}
 	}
-	message.Data = vals[0].(string)
+	message.Data = []byte(vals[0].(string))
 	message.MessageID = vals[1].(string)
-	message.Status = vals[2].(int64)
+	message.status = vals[2].(int64)
 	message.inTime = vals[3].(int64)
 	message.lockTime = vals[4].(int64)
 	message.doneTime = vals[5].(int64)
@@ -252,14 +252,14 @@ func (lq *SQueueLite) Get(messageID string) (*Message, error) {
 	defer row.Close()
 
 	message := Message{}
-	vals := []driver.Value{message.Data, message.MessageID, message.Status, message.inTime, message.lockTime, message.doneTime}
+	vals := []driver.Value{message.Data, message.MessageID, message.status, message.inTime, message.lockTime, message.doneTime}
 	err = row.Next(vals)
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
-	message.Data = vals[0].(string)
+	message.Data = []byte(vals[0].(string))
 	message.MessageID = vals[1].(string)
-	message.Status = vals[2].(int64)
+	message.status = vals[2].(int64)
 	message.inTime = vals[3].(int64)
 	message.lockTime = vals[4].(int64)
 	message.doneTime = vals[5].(int64)
@@ -319,16 +319,16 @@ func (lq *SQueueLite) ListLocked(threshold_seconds int) ([]Message, error) {
 
 	for {
 		message := Message{}
-		vals := []driver.Value{message.Data, message.MessageID, message.Status, message.inTime, message.lockTime, message.doneTime}
+		vals := []driver.Value{message.Data, message.MessageID, message.status, message.inTime, message.lockTime, message.doneTime}
 		err = rows.Next(vals)
 		if err != nil && err != io.EOF {
 			return nil, err
 		} else if err == io.EOF {
 			break
 		}
-		message.Data = vals[0].(string)
+		message.Data = []byte(vals[0].(string))
 		message.MessageID = vals[1].(string)
-		message.Status = vals[2].(int64)
+		message.status = vals[2].(int64)
 		message.inTime = vals[3].(int64)
 		message.lockTime = vals[4].(int64)
 		message.doneTime = vals[5].(int64)
@@ -416,9 +416,9 @@ func (lq *SQueueLite) Empty() (bool, error) {
 
 func (lq *SQueueLite) Full() (bool, error) {
 	var count int
-	rows, err := lq.conn.Query(fmt.Sprintf(`
-        SELECT COUNT(*) as cnt FROM Queue WHERE status = %v
-    `, READY), []driver.Value{})
+	rows, err := lq.conn.Query(`
+        SELECT COUNT(*) as cnt FROM Queue WHERE status = ?
+    `, []driver.Value{READY})
 	if err != nil {
 		return false, err
 	}
@@ -472,16 +472,16 @@ func (lq *SQueueLite) String() string {
 
 	for {
 		message := Message{}
-		vals := []driver.Value{message.Data, message.MessageID, message.Status, message.inTime, message.lockTime, message.doneTime}
+		vals := []driver.Value{message.Data, message.MessageID, message.status, message.inTime, message.lockTime, message.doneTime}
 		err = rows.Next(vals)
 		if err != nil && err != io.EOF {
 			return fmt.Sprintf("%T(Connection=%v)", lq, lq.conn)
 		} else if err == io.EOF {
 			break
 		}
-		message.Data = vals[0].(string)
+		message.Data = []byte(vals[0].(string))
 		message.MessageID = vals[1].(string)
-		message.Status = vals[2].(int64)
+		message.status = vals[2].(int64)
 		message.inTime = vals[3].(int64)
 		message.lockTime = vals[4].(int64)
 		message.doneTime = vals[5].(int64)

@@ -13,18 +13,22 @@ import (
 )
 
 func TestBasicFunctionality(t *testing.T) {
+	os.Remove(".queue.db")
+	os.Remove(".queue.db-journal")
 	//if on FS, delete old queue
-	defer os.Remove(".queue.db")
 	for _, env := range []bool{true, false} {
 		queue, err := NewSQueueLite(".queue", env, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = queue.Put("Test1")
+		defer queue.Close()
+		defer os.Remove(".queue.db")
+		defer os.Remove(".queue.db-journal")
+		err = queue.Put([]byte("Test1"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = queue.Put("Test2")
+		err = queue.Put([]byte("Test2"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -32,15 +36,15 @@ func TestBasicFunctionality(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if msg.Data != "Test1" {
-			t.Fatalf("First message payload should be Test1:%v", msg.Data)
+		if string(msg.Data) != "Test1" {
+			t.Fatalf("First message payload should be Test1:%v", string(msg.Data))
 		}
 		msg, err = queue.Peek()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if msg.Data != "Test1" {
-			t.Fatalf("First message payload should be still Test1:%v", msg.Data)
+		if string(msg.Data) != "Test1" {
+			t.Fatalf("First message payload should be still Test1:%v", string(msg.Data))
 		}
 		err = queue.Done(msg.MessageID)
 		if err != nil {
@@ -50,8 +54,8 @@ func TestBasicFunctionality(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if msg.Data != "Test2" {
-			t.Fatalf("Second message payload should be Test2:%v", msg.Data)
+		if string(msg.Data) != "Test2" {
+			t.Fatalf("Second message payload should be Test2:%v", string(msg.Data))
 		}
 		size, err := queue.Qsize()
 		if err != nil {
@@ -74,7 +78,7 @@ func TestBasicFunctionality(t *testing.T) {
 		if isFull {
 			t.Fatal("Queue should not be full")
 		}
-		err = queue.Put("Test3")
+		err = queue.Put([]byte("Test3"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -89,8 +93,8 @@ func TestBasicFunctionality(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if msg.Data != "Test2" {
-			t.Fatalf("Second message payload should be Test2:%v", msg.Data)
+		if string(msg.Data) != "Test2" {
+			t.Fatalf("Second message payload should be Test2:%v", string(msg.Data))
 		}
 		msg2, err := queue.Get(msg.MessageID)
 		if err != nil {
@@ -136,7 +140,7 @@ func TestBasicPeakBlock(t *testing.T) {
 	go func(queue *SQueueLite) {
 		time.Sleep(2 * time.Second)
 
-		err := queue.Put("Test")
+		err := queue.Put([]byte("Test"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,26 +150,27 @@ func TestBasicPeakBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Data != "Test" {
-		t.Fatalf("Should be Test:%v", msg.Data)
+	if string(msg.Data) != "Test" {
+		t.Fatalf("Should be Test:%v", string(msg.Data))
 	}
 }
 
 func TestLoad(t *testing.T) {
-	defer os.Remove(".queue.db")
+	os.Remove(".queue.db")
+	os.Remove(".queue.db-journal")
 	queue, err := NewSQueueLite(".queue", false, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = queue.Put("Test1!")
+	err = queue.Put([]byte("Test1!"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = queue.Put("Test2!")
+	err = queue.Put([]byte("Test2!"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = queue.Put("Test3!")
+	err = queue.Put([]byte("Test3!"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,13 +183,16 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer queue.Close()
+	defer os.Remove(".queue.db")
+	defer os.Remove(".queue.db-journal")
 
 	msg, err := queue.Peek()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Data != "Test1!" {
-		t.Fatalf("Should be Test1!:%v", msg.Data)
+	if string(msg.Data) != "Test1!" {
+		t.Fatalf("Should be Test1!:%v", string(msg.Data))
 	}
 	err = queue.Done(msg.MessageID)
 	if err != nil {
@@ -194,8 +202,8 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Data != "Test2!" {
-		t.Fatalf("Should be Test1!:%v", msg.Data)
+	if string(msg.Data) != "Test2!" {
+		t.Fatalf("Should be Test1!:%v", string(msg.Data))
 	}
 	err = queue.Done(msg.MessageID)
 	if err != nil {
@@ -205,8 +213,8 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Data != "Test3!" {
-		t.Fatalf("Should be Test1!:%v", msg.Data)
+	if string(msg.Data) != "Test3!" {
+		t.Fatalf("Should be Test1!:%v", string(msg.Data))
 	}
 	err = queue.Done(msg.MessageID)
 	if err != nil {
@@ -218,10 +226,6 @@ func TestLoad(t *testing.T) {
 	}
 	if !isempty {
 		t.Fatal("Queue should be empty")
-	}
-	err = queue.Close()
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -241,7 +245,7 @@ func TestMultithreading(t *testing.T) {
 		go func() {
 			for j := 0; j < 10; j++ {
 				content := uuid.New().String()
-				err = queue.Put(content)
+				err = queue.Put([]byte(content))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -307,7 +311,7 @@ func TestRetry(t *testing.T) {
 	defer queue.Close()
 	defer os.Remove(".queue.db")
 	defer os.Remove(".queue.db-journal")
-	err = queue.Put("TestRetry")
+	err = queue.Put([]byte("TestRetry"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,18 +341,18 @@ func TestRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Data != "TestRetry" {
-		t.Fatal("msg.Data should be TestRetry")
+	if string(msg.Data) != "TestRetry" {
+		t.Fatal("string(msg.Data) should be TestRetry")
 	}
 	err = queue.Done(msg.MessageID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = queue.Put("TestRetry2")
+	err = queue.Put([]byte("TestRetry2"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = queue.Put("TestRetry3")
+	err = queue.Put([]byte("TestRetry3"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,8 +360,8 @@ func TestRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Data != "TestRetry2" {
-		t.Fatal("msg.Data should be TestRetry2")
+	if string(msg.Data) != "TestRetry2" {
+		t.Fatal("string(msg.Data) should be TestRetry2")
 	}
 	err = queue.Done(msg.MessageID)
 	if err != nil {
@@ -380,14 +384,14 @@ func TestRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Data != "TestRetry3" {
-		t.Fatal("msg.Data should be TestRetry3")
+	if string(msg.Data) != "TestRetry3" {
+		t.Fatal("string(msg.Data) should be TestRetry3")
 	}
 	err = queue.Done(msg.MessageID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg, err = queue.Peek()
+	_, err = queue.Peek()
 	if err == nil {
 		t.Fatal("should be an ErrNoRows error")
 	} else if err != sql.ErrNoRows {
