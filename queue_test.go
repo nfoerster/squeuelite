@@ -120,8 +120,10 @@ func testQueueImplementation(t *testing.T, q WorkQueue) {
 func TestQueue(t *testing.T) {
 	err := os.Remove("test.db")
 	if err != nil {
-		t.Error(err)
-		t.FailNow()
+		if _, ok := err.(*os.PathError); !ok {
+			t.Error(err)
+			t.FailNow()
+		}
 	}
 	q, err := NewPQueue("test.db", 2)
 	if err != nil {
