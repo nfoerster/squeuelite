@@ -23,6 +23,10 @@ type SQueue struct {
 	delete   *sql.Stmt
 }
 
+// SQueue is a shortcut for Subscriber Queue
+// which is a persistent queue that
+// call a certain callback function
+// after a new message is put into the queue
 func NewSQueue(connStr string) (*SQueue, error) {
 	// file:test.db?cache=shared&mode=memory&_auto_vacuum=2&_journal_mode=wal
 	conn, err := sql.Open(fmt.Sprintf("sqlite3%v", ""), connStr)
@@ -76,7 +80,7 @@ func NewSQueue(connStr string) (*SQueue, error) {
 		lq.notify <- queuelen
 	}
 	//start notification
-	lq.Pump()
+	lq.pump()
 	return lq, nil
 }
 
@@ -98,7 +102,7 @@ func (lq *SQueue) init() error {
 	return nil
 }
 
-func (lq *SQueue) Next() (*PMessage, error) {
+func (lq *SQueue) next() (*PMessage, error) {
 	row := lq.nextfree.QueryRow(LOCKED, READY)
 	if row.Err() != nil {
 		return nil, row.Err()
@@ -112,7 +116,7 @@ func (lq *SQueue) Next() (*PMessage, error) {
 	return msg, nil
 }
 
-func (lq *SQueue) Pump() error {
+func (lq *SQueue) pump() error {
 	var queueSize int64
 	go func() {
 		for nmsgs := range lq.notify {
@@ -122,7 +126,7 @@ func (lq *SQueue) Pump() error {
 	go func() {
 		for {
 			if queueSize > 0 {
-				nm, err := lq.Next()
+				nm, err := lq.next()
 				// Keep Message Pump going, probably should read more than one from storage
 				if err != nil {
 					log.Printf("pump goroutine failed during lq.Next with err: %v", err)
@@ -139,6 +143,13 @@ func (lq *SQueue) Pump() error {
 	return nil
 }
 
+// Subscribe function registers a callback function
+// to be called after the db is initially read
+// or a new message is put into the queue.
+//
+// Only one callback function can be registered,
+// if a second function is registered, the first is
+// replaced
 func (lq *SQueue) Subscribe(cb func(*PMessage) error) error {
 	if lq.subscribed {
 		return errors.New("already subscribed cannot have multiple subs")
@@ -150,13 +161,13 @@ func (lq *SQueue) Subscribe(cb func(*PMessage) error) error {
 		for msg := range lq.internal {
 			err := cb(msg)
 			if err != nil {
-				ierr := lq.Update(msg.MessageID, FAILED)
+				ierr := lq.updateState(msg.MessageID, FAILED)
 				if ierr != nil {
 					fmt.Println("error during marking", ierr)
 				}
 				// add to notify channel again to retry?
 			} else {
-				ierr := lq.Done(msg.MessageID)
+				ierr := lq.done(msg.MessageID)
 				if ierr != nil {
 					fmt.Println("erro during done", ierr)
 				}
@@ -167,6 +178,8 @@ func (lq *SQueue) Subscribe(cb func(*PMessage) error) error {
 	return nil
 }
 
+// Put adds a new message to the end
+// of the queue, put will not block
 func (lq *SQueue) Put(data []byte) error {
 	row := lq.insert.QueryRow(READY, data)
 	if row.Err() != nil {
@@ -183,7 +196,7 @@ func (lq *SQueue) Put(data []byte) error {
 	return nil
 }
 
-func (lq *SQueue) Update(messageID int64, state int64) error {
+func (lq *SQueue) updateState(messageID int64, state int64) error {
 	_, err := lq.update.Exec(state, messageID)
 
 	if err != nil {
@@ -193,7 +206,7 @@ func (lq *SQueue) Update(messageID int64, state int64) error {
 	return nil
 }
 
-func (lq *SQueue) Done(messageID int64) error {
+func (lq *SQueue) done(messageID int64) error {
 	_, err := lq.delete.Exec(messageID)
 
 	if err != nil {
@@ -203,6 +216,10 @@ func (lq *SQueue) Done(messageID int64) error {
 	return nil
 }
 
+// Close closes internal channels
+// and the database connection itself
+//
+// reuse requires to create a new SQueue
 func (lq *SQueue) Close() {
 	close(lq.notify)
 	lq.conn.Close()

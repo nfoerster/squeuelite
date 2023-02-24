@@ -10,6 +10,7 @@ type WorkQueue interface {
 	Empty() (bool, error)
 	Qsize() (int64, error)
 	Full() (bool, error)
+	Close() error
 }
 
 const (
@@ -18,21 +19,13 @@ const (
 	FAILED
 )
 
-type Message struct {
-	Data      []byte
-	MessageID string
-	status    int64
-	inTime    int64
-	lockTime  int64
-	doneTime  int64
-}
-
 // SubscribeQueue is a small interface works with
 // callback and is easer for me to comprehend
 // modelled after nats
 type SubscribeQueue interface {
 	Put([]byte) error
 	Subscribe(func(msg *PMessage) error) error
+	Close() error
 }
 
 type PMessage struct {
