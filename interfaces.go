@@ -10,13 +10,11 @@ type WorkQueue interface {
 	Empty() (bool, error)
 	Qsize() (int64, error)
 	Full() (bool, error)
-	Prune() error
 }
 
 const (
 	READY int64 = iota
 	LOCKED
-	DONE
 	FAILED
 )
 
