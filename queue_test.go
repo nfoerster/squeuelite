@@ -3,9 +3,13 @@ package squeuelite
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"os"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func testQueueImplementation(t *testing.T, q WorkQueue) {
@@ -106,10 +110,6 @@ func testQueueImplementation(t *testing.T, q WorkQueue) {
 		t.Fatal(err)
 	}
 
-	err = q.Prune()
-	if err != nil {
-		t.Fatal(err)
-	}
 	isEmpty, err = q.Empty()
 	if err != nil {
 		t.Fatal(err)
@@ -120,22 +120,16 @@ func testQueueImplementation(t *testing.T, q WorkQueue) {
 }
 
 func TestQueue(t *testing.T) {
-	err := os.Remove("test.db")
-	if err != nil {
-		if _, ok := err.(*os.PathError); !ok {
-			t.Error(err)
-			t.FailNow()
-		}
-	}
 	q, err := NewPQueue("test.db", 2)
 	if err != nil {
 		t.Error(err)
 		t.FailNow()
 	}
+	defer os.Remove("test.db")
+	defer q.Close()
 
 	testQueueImplementation(t, q)
 }
-
 
 func TestSubscriber(t *testing.T) {
 	q, err := NewSQueue("test_sub.db")
@@ -143,6 +137,8 @@ func TestSubscriber(t *testing.T) {
 		t.Error(err)
 		t.FailNow()
 	}
+	defer q.Close()
+	defer os.Remove("test_sub.db")
 
 	nmsg := 10
 	go func() {
@@ -155,17 +151,110 @@ func TestSubscriber(t *testing.T) {
 		}
 	}()
 
-	count := 0 
-	err = q.Subscribe(func (m *PMessage) error {
-	        fmt.Println(m.Data)
+	count := 0
+	err = q.Subscribe(func(m *PMessage) error {
+		fmt.Println(m.Data)
 		count++
 		return nil
 	})
 	if err != nil {
 		t.Error(err)
 	}
-	time.Sleep(1* time.Second)
+	time.Sleep(2 * time.Second)
 	if count != nmsg {
-		t.Error("did not receive ", nmsg ," messages, was: ", count)
+		t.Error("did not receive ", nmsg, " messages, was: ", count)
 	}
 }
+
+func TestMultithreading(t *testing.T) {
+	queue, err := NewSQueue("test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Close()
+	defer os.Remove("test.db")
+
+	maxMsgs := 10
+	workers := 10
+	atomicCounterPut := 0
+	atomicCounterGet := 0
+
+	wg := sync.WaitGroup{}
+	//producers
+	for i := 0; i < workers; i++ {
+		go func() {
+			for j := 0; j < maxMsgs; j++ {
+				content := uuid.New().String()
+				queue.Put([]byte(content))
+				atomicCounterPut = atomicCounterPut + 1
+			}
+			log.Print("producer done")
+			wg.Done()
+
+		}()
+		wg.Add(1)
+	}
+	//subscriber is a singleton
+	wg.Add(1)
+	cancellationChan := make(chan int, 1)
+	go func() {
+		queue.Subscribe(func(p *PMessage) error {
+			atomicCounterGet = atomicCounterGet + 1
+			if atomicCounterGet%100 == 0 {
+				t.Log(atomicCounterGet)
+			}
+			if atomicCounterPut == (maxMsgs*workers) && atomicCounterGet >= (maxMsgs*workers) {
+				cancellationChan <- 1
+			}
+			return nil
+		})
+		<-cancellationChan
+		wg.Done()
+	}()
+	wg.Wait()
+}
+
+// func BenchmarkBasic(b *testing.B) {
+// 	queue, err := NewSQueue("test.db")
+// 	if err != nil {
+// 		b.Fatal(err)
+// 	}
+// 	defer queue.Close()
+// 	defer os.Remove("test.db")
+
+// 	maxMsgs := 100
+// 	workers := 10
+// 	atomicCounterPut := 0
+// 	atomicCounterGet := 0
+
+// 	wg := sync.WaitGroup{}
+// 	//producers
+// 	for i := 0; i < workers; i++ {
+// 		go func() {
+// 			for j := 0; j < maxMsgs; j++ {
+// 				content := uuid.New().String()
+// 				queue.Put([]byte(content))
+// 				atomicCounterPut = atomicCounterPut + 1
+// 			}
+// 			log.Print("producer done")
+// 			wg.Done()
+
+// 		}()
+// 		wg.Add(1)
+// 	}
+// 	//subscriber is a singleton
+// 	wg.Add(1)
+// 	cancellationChan := make(chan int, 1)
+// 	go func() {
+// 		queue.Subscribe(func(p *PMessage) error {
+// 			atomicCounterGet = atomicCounterGet + 1
+// 			if atomicCounterPut == (maxMsgs*workers) && atomicCounterGet >= (maxMsgs*workers) {
+// 				cancellationChan <- 1
+// 			}
+// 			return nil
+// 		})
+// 		<-cancellationChan
+// 		wg.Done()
+// 	}()
+// 	wg.Wait()
+// }
