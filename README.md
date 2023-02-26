@@ -14,7 +14,7 @@ SQueueLite is a persistant queue based on SQLite. It uses a reliable persistent 
 package squeuelite
 
 //main routine
-q, err := squeuelite.NewSQueue("test.db")
+q, err := squeuelite.NewPQueue("test.db")
 if err != nil {
     return err
 }
@@ -35,15 +35,51 @@ if err != nil {
 }
 
 //put routine
-go func() {
-    payload := []byte("Payload")
-    err := q.Put(payload)
-    if err != nil {
-        t.Error(err)
-    }
-}()
+payload := []byte("Payload")
+err := q.Put(payload)
+if err != nil {
+    t.Error(err)
+}
 ```
 
+### manual mode
+
+```golang
+package squeuelite
+
+//main routine
+q, err := squeuelite.NewPQueue("test.db")
+if err != nil {
+    return err
+}
+defer q.Close()
+
+//put routine
+payload := []byte("Payload")
+err := q.Put(payload)
+if err != nil {
+    t.Error(err)
+}
+
+//put routine
+m, err := q.Peek()
+if err != nil {
+    t.Error(err)
+}
+err = processMsg(m.Data) //your process function
+if err != nil{
+    errint := q.MarkFailed(m.MessageID)
+    if errint != nil{
+        //handle db errors setting msg to fail
+    }
+} else {
+    errint := q.Done(m.MessageID)
+    if errint != nil{
+        //handle db errors deleting completed msg
+    }
+}
+
+```
 
 ## contributors
 

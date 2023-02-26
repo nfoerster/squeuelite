@@ -1,3 +1,5 @@
 *.db
 *.db-journal
 .old
+test*.db-wal
+test*.db-shm
