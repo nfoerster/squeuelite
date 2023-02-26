@@ -27,6 +27,8 @@ type SQueue struct {
 // which is a persistent queue that
 // call a certain callback function
 // after a new message is put into the queue
+//
+// Squeue has no max size
 func NewSQueue(connStr string) (*SQueue, error) {
 	// file:test.db?cache=shared&mode=memory&_auto_vacuum=2&_journal_mode=wal
 	conn, err := sql.Open(fmt.Sprintf("sqlite3%v", ""), connStr)
@@ -148,8 +150,7 @@ func (lq *SQueue) pump() error {
 // or a new message is put into the queue.
 //
 // Only one callback function can be registered,
-// if a second function is registered, the first is
-// replaced
+// if a second function is registered, an error is returned
 func (lq *SQueue) Subscribe(cb func(*PMessage) error) error {
 	if lq.subscribed {
 		return errors.New("already subscribed cannot have multiple subs")
@@ -242,6 +243,8 @@ type PQueue struct {
 	nextfree     *sql.Stmt
 }
 
+// PQueue is the shortcut for Persistent Queue which
+// is a classical queue without option to subscribe
 func NewPQueue(connStr string, maxsize int64) (*PQueue, error) {
 	// file:test.db?cache=shared&mode=memory&_auto_vacuum=2&_journal_mode=wal
 	conn, err := sql.Open("sqlite3", connStr)
@@ -332,7 +335,7 @@ func (lq *PQueue) init() error {
 	return nil
 }
 
-func (lq *PQueue) Next() (*PMessage, error) {
+func (lq *PQueue) next() (*PMessage, error) {
 	row := lq.nextfree.QueryRow(LOCKED, READY)
 	if row.Err() != nil {
 		return nil, row.Err()
@@ -347,9 +350,9 @@ func (lq *PQueue) Next() (*PMessage, error) {
 }
 
 // Keep Message Pump going, probably should read more than one from storage
-func (lq *PQueue) Pump() error {
+func (lq *PQueue) pump() error {
 	if lq.queuelen > 0 {
-		nm, err := lq.Next()
+		nm, err := lq.next()
 		if err != nil {
 			return err
 		}
@@ -366,7 +369,7 @@ func (lq *PQueue) Subscribe(cb func(*PMessage) error) error {
 	lq.subscribed = true
 
 	go func() {
-		lq.Pump()
+		lq.pump()
 		for msg := range lq.internal {
 			err := cb(msg)
 			if err != nil {
@@ -381,7 +384,7 @@ func (lq *PQueue) Subscribe(cb func(*PMessage) error) error {
 				}
 				atomic.AddInt64(&lq.queuelen, -1)
 			}
-			err = lq.Pump()
+			err = lq.pump()
 			if err != nil {
 				fmt.Println("error during pump", err)
 			}
@@ -439,6 +442,7 @@ func (lq *PQueue) Done(messageID int64) error {
 		return err
 	}
 
+	atomic.AddInt64(&lq.queuelen, -1)
 	return nil
 }
 
@@ -490,6 +494,6 @@ func (lq *PQueue) Full() (bool, error) {
 	return count >= lq.maxsize, nil
 }
 
-func (lq *PQueue) Close() {
-	lq.conn.Close()
+func (lq *PQueue) Close() error {
+	return lq.conn.Close()
 }
