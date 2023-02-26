@@ -14,7 +14,7 @@ SQueueLite is a persistant queue based on SQLite. It uses a reliable persistent 
 package squeuelite
 
 //main routine
-q, err := squeuelite.NewPQueue("test.db")
+q, err := squeuelite.NewPQueue("test.db", 10)
 if err != nil {
     return err
 }
@@ -48,7 +48,7 @@ if err != nil {
 package squeuelite
 
 //main routine
-q, err := squeuelite.NewPQueue("test.db")
+q, err := squeuelite.NewPQueue("test.db", 10)
 if err != nil {
     return err
 }
