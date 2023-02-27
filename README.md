@@ -54,14 +54,12 @@ if err != nil {
 }
 defer q.Close()
 
-//put routine
 payload := []byte("Payload")
 err = q.Put(payload)
 if err != nil {
     log.Fatal(err)
 }
 
-//put routine
 m, err := q.Peek()
 if err != nil {
     log.Fatal(err)
