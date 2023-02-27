@@ -7,10 +7,11 @@ type WorkQueue interface {
 	Get(int64) (*PMessage, error)
 	Peek() (*PMessage, error)
 	Done(int64) error
+	MarkFailed(int64) error
 	IsEmpty() (bool, error)
 	Size() (int64, error)
 	IsFull() (bool, error)
-	Retry(string) error
+	Retry(int64) error
 	RetryAll() error
 	Close() error
 }

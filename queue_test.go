@@ -138,15 +138,107 @@ func TestQueue(t *testing.T) {
 	testQueueImplementation(t, q)
 }
 
-func TestSubscriber(t *testing.T) {
-	q, err := NewPQueue("test_sub.db", 100)
+func testRetryImplementation(t *testing.T, q WorkQueue) {
+
+	p1 := []byte("Test1")
+	p2 := []byte("Test2")
+
+	err := q.Put(p1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = q.Put(p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := q.Peek()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(msg.Data, p1) {
+		t.Fatalf("message payload was %v expected %v", string(msg.Data), string(p1))
+	}
+	err = q.MarkFailed(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err = q.Peek()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(msg.Data, p2) {
+		t.Fatalf("message payload was %v expected %v", string(msg.Data), string(p2))
+	}
+	err = q.MarkFailed(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isEmpty, err := q.IsEmpty()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isEmpty {
+		t.Fatal("Queue should be empty")
+	}
+	err = q.Retry(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err = q.Peek()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(msg.Data, p2) {
+		t.Fatalf("message payload was %v expected %v", string(msg.Data), string(p2))
+	}
+	err = q.Done(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isEmpty, err = q.IsEmpty()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isEmpty {
+		t.Fatal("Queue should be empty")
+	}
+	err = q.RetryAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err = q.Peek()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(msg.Data, p1) {
+		t.Fatalf("message payload was %v expected %v", string(msg.Data), string(p1))
+	}
+	err = q.Done(msg.MessageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isEmpty, err = q.IsEmpty()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isEmpty {
+		t.Fatal("Queue should be empty")
+	}
+}
+
+func TestRetry(t *testing.T) {
+	q, err := NewPQueue("test.db", 2)
 	if err != nil {
 		t.Error(err)
 		t.FailNow()
 	}
+	defer os.Remove("test.db")
 	defer q.Close()
-	defer os.Remove("test_sub.db")
 
+	testRetryImplementation(t, q)
+}
+
+func testSubscription(t *testing.T, q SubscribeQueue) {
 	nmsg := 10
 	go func() {
 		for ii := 0; ii < nmsg; ii++ {
@@ -159,7 +251,7 @@ func TestSubscriber(t *testing.T) {
 	}()
 
 	count := 0
-	err = q.Subscribe(func(m *PMessage) error {
+	err := q.Subscribe(func(m *PMessage) error {
 		fmt.Println(m.Data)
 		count++
 		return nil
@@ -173,14 +265,19 @@ func TestSubscriber(t *testing.T) {
 	}
 }
 
-func TestMultithreading(t *testing.T) {
-	queue, err := NewPQueue("test.db", 100)
+func TestSubscriber(t *testing.T) {
+	q, err := NewPQueue("test_sub.db", 100)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		t.FailNow()
 	}
-	defer queue.Close()
-	defer os.Remove("test.db")
+	defer q.Close()
+	defer os.Remove("test_sub.db")
 
+	testSubscription(t, q)
+}
+
+func testMultithreading(t *testing.T, q SubscribeQueue) {
 	maxMsgs := 10
 	workers := 10
 	atomicCounterPut := 0
@@ -192,7 +289,7 @@ func TestMultithreading(t *testing.T) {
 		go func() {
 			for j := 0; j < maxMsgs; j++ {
 				content := uuid.New().String()
-				queue.Put([]byte(content))
+				q.Put([]byte(content))
 				atomicCounterPut = atomicCounterPut + 1
 			}
 			log.Print("producer done")
@@ -205,7 +302,7 @@ func TestMultithreading(t *testing.T) {
 	wg.Add(1)
 	cancellationChan := make(chan int, 1)
 	go func() {
-		queue.Subscribe(func(p *PMessage) error {
+		q.Subscribe(func(p *PMessage) error {
 			atomicCounterGet = atomicCounterGet + 1
 			if atomicCounterGet%100 == 0 {
 				t.Log(atomicCounterGet)
@@ -219,6 +316,17 @@ func TestMultithreading(t *testing.T) {
 		wg.Done()
 	}()
 	wg.Wait()
+}
+
+func TestMultithreading(t *testing.T) {
+	q, err := NewPQueue("test.db", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	defer os.Remove("test.db")
+
+	testMultithreading(t, q)
 }
 
 func BenchmarkBasic(b *testing.B) {

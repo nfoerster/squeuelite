@@ -16,7 +16,7 @@ package squeuelite
 //main routine
 q, err := squeuelite.NewPQueue("test.db", 10)
 if err != nil {
-    return err
+    log.Fatal(err)
 }
 defer q.Close()
 
@@ -31,14 +31,14 @@ err = q.Subscribe(func(m *PMessage) error {
 		return nil
 	})
 if err != nil {
-    return err
+    log.Fatal(err)
 }
 
 //put routine
 payload := []byte("Payload")
-err := q.Put(payload)
+err = q.Put(payload)
 if err != nil {
-    t.Error(err)
+    log.Fatal(err)
 }
 ```
 
@@ -50,22 +50,23 @@ package squeuelite
 //main routine
 q, err := squeuelite.NewPQueue("test.db", 10)
 if err != nil {
-    return err
+    log.Fatal(err)
 }
 defer q.Close()
 
 //put routine
 payload := []byte("Payload")
-err := q.Put(payload)
+err = q.Put(payload)
 if err != nil {
-    t.Error(err)
+    log.Fatal(err)
 }
 
 //put routine
 m, err := q.Peek()
 if err != nil {
-    t.Error(err)
+    log.Fatal(err)
 }
+log.Printf("message received:%v",m.Data)
 err = processMsg(m.Data) //your process function
 if err != nil{
     errint := q.MarkFailed(m.MessageID)

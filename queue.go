@@ -26,6 +26,7 @@ type PQueue struct {
 	delete    *sql.Stmt
 	selmsg    *sql.Stmt
 	selnext   *sql.Stmt
+	sizeStmt  *sql.Stmt
 }
 
 // PQueue is a persistent queue that can be
@@ -61,7 +62,7 @@ func NewPQueue(connStr string, maxsize int64) (*PQueue, error) {
 	}
 	lq.insert = insertStmt
 
-	updateStmt, err := lq.conn.Prepare("UPDATE queue SET status = ?, done_time = unixepoch() WHERE message_id = ?")
+	updateStmt, err := lq.conn.Prepare("UPDATE queue SET status = ? WHERE message_id = ?")
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +97,12 @@ func NewPQueue(connStr string, maxsize int64) (*PQueue, error) {
 		return nil, err
 	}
 	lq.selnext = selnextStmt
+
+	sizeStmt, err := lq.conn.Prepare("SELECT COUNT(*) FROM Queue WHERE status <> ?")
+	if err != nil {
+		return nil, err
+	}
+	lq.sizeStmt = sizeStmt
 
 	// if starting from populated queue we are starting with capacity in notify
 	row := conn.QueryRow("select count(*) from queue")
@@ -280,9 +287,16 @@ func (lq *PQueue) Done(messageID int64) error {
 // will not be delivered again until it is actively set to retry,
 // it returns an sql.ErrorNoRows if the element could not be find.
 func (lq *PQueue) MarkFailed(messageID int64) error {
-	row := lq.update.QueryRow(FAILED, messageID)
-	if row.Err() != nil {
-		return row.Err()
+	res, err := lq.update.Exec(FAILED, messageID)
+	if err != nil {
+		return err
+	}
+	affectedRows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affectedRows == 0 {
+		return sql.ErrNoRows
 	}
 
 	atomic.AddInt64(&lq.queuelen, -1)
@@ -293,10 +307,17 @@ func (lq *PQueue) MarkFailed(messageID int64) error {
 // which causes the message to be delivered again
 // until it is actively set to retry,
 // it returns an sql.ErrorNoRows if the element could not be find.
-func (lq *PQueue) Retry(messageID string) error {
-	row := lq.update.QueryRow(READY, messageID)
-	if row.Err() != nil {
-		return row.Err()
+func (lq *PQueue) Retry(messageID int64) error {
+	res, err := lq.update.Exec(READY, messageID)
+	if err != nil {
+		return err
+	}
+	affectedRows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affectedRows == 0 {
+		return sql.ErrNoRows
 	}
 
 	atomic.AddInt64(&lq.queuelen, 1)
@@ -305,29 +326,28 @@ func (lq *PQueue) Retry(messageID string) error {
 
 // RetryAll sets all messages from FAILED to READY state.
 func (lq *PQueue) RetryAll() error {
-	row := lq.updateall.QueryRow()
-	if row.Err() != nil {
-		return row.Err()
+	res, err := lq.updateall.Exec()
+	if err != nil {
+		return err
 	}
-	var size int64
-	err := row.Scan(&size)
+	affectedRows, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
 
-	atomic.AddInt64(&lq.queuelen, size)
+	atomic.AddInt64(&lq.queuelen, affectedRows)
 	return nil
 }
 
 // Size returns the number of elements in the
 // persistent queue where the state is READY.
 func (lq *PQueue) Size() (int64, error) {
-	rows := lq.conn.QueryRow(`SELECT COUNT(*) FROM Queue WHERE status <> ?`, FAILED)
-	if rows.Err() != nil {
-		return -1, rows.Err()
+	row := lq.sizeStmt.QueryRow(FAILED)
+	if row.Err() != nil {
+		return -1, row.Err()
 	}
 	count := int64(0)
-	err := rows.Scan(&count)
+	err := row.Scan(&count)
 	if err != nil {
 		return -1, err
 	}
