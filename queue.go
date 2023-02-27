@@ -241,8 +241,13 @@ func (lq *PQueue) Peek() (*PMessage, error) {
 	if row.Err() != nil {
 		return nil, row.Err()
 	}
+	
 	msg := &PMessage{}
-	row.Scan(&msg.MessageID, &msg.Status, &msg.Data)
+	err := row.Scan(&msg.MessageID, &msg.Status, &msg.Data)
+	if err != nil {
+		return nil, err 
+	}
+	
 	return msg, nil
 }
 
