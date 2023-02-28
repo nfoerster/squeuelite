@@ -1,4 +1,4 @@
-# squeuelite - a persistent queue based on SQLite writteni in Go
+# squeuelite - a persistent queue based on SQLite written in Go
 
 [![Go](https://github.com/nfoerster/squeuelite/actions/workflows/go.yml/badge.svg)](https://github.com/nfoerster/squeuelite/actions/workflows/go.yml)
 
