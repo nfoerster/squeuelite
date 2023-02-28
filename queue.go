@@ -39,7 +39,7 @@ type PQueue struct {
 // to get automatically notified after a message is added to
 // the queue.
 func NewPQueue(connStr string, maxsize int64) (*PQueue, error) {
-	conn, err := sql.Open("sqlite3", fmt.Sprintf("%v%v", connStr, "?cache=shared&mode=memory&_sync=1&_auto_vacuum=2&_journal_mode=wal"))
+	conn, err := sql.Open("sqlite3", fmt.Sprintf("%v%v", connStr, "?mode=rw&_sync=2&_auto_vacuum=2&_journal_mode=wal"))
 	if err != nil {
 		return nil, err
 	}
