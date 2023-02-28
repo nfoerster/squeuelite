@@ -162,9 +162,13 @@ func (lq *PQueue) pump() error {
 			if lq.queuelen > 0 {
 				nm, err := lq.next()
 				// Keep Message Pump going, probably should read more than one from storage
-				if err != nil {
+				if err != nil && err == sql.ErrNoRows {
+					// Potentially subscriber is still processing
+					time.Sleep(1 * time.Second)
+					continue
+				} else if err != nil {
 					log.Printf("pump goroutine failed during lq.Next with err: %v", err)
-					time.Sleep(30 * time.Second)
+					time.Sleep(1 * time.Second)
 					continue
 				}
 				lq.internal <- nm
@@ -241,13 +245,13 @@ func (lq *PQueue) Peek() (*PMessage, error) {
 	if row.Err() != nil {
 		return nil, row.Err()
 	}
-	
+
 	msg := &PMessage{}
 	err := row.Scan(&msg.MessageID, &msg.Status, &msg.Data)
 	if err != nil {
-		return nil, err 
+		return nil, err
 	}
-	
+
 	return msg, nil
 }
 
