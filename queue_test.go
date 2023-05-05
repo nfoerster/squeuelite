@@ -277,19 +277,38 @@ func TestSubscriber(t *testing.T) {
 	testSubscription(t, q)
 }
 
-func testMultithreading(t *testing.T, q SubscribeQueue) {
-	maxMsgs := 10
-	workers := 10
+func testMultithreading(maxMsgs, workers int, queue SubscribeQueue) {
+
 	atomicCounterPut := 0
 	atomicCounterGet := 0
 
 	wg := sync.WaitGroup{}
+	wg.Add(1)
+	cancellationChan := make(chan int, 1)
+	go func() {
+		err := queue.Subscribe(func(p *PMessage) error {
+			atomicCounterGet = atomicCounterGet + 1
+			if atomicCounterPut == (maxMsgs*workers) && atomicCounterGet >= (maxMsgs*workers) {
+				cancellationChan <- 1
+			}
+			return nil
+		})
+		if err != nil {
+			log.Printf("get routine:%v", err)
+		}
+		<-cancellationChan
+		wg.Done()
+	}()
 	//producers
 	for i := 0; i < workers; i++ {
 		go func() {
 			for j := 0; j < maxMsgs; j++ {
 				content := uuid.New().String()
-				q.Put([]byte(content))
+				err := queue.Put([]byte(content))
+				for err != nil {
+					// log.Printf("put routine:%v", err)
+					err = queue.Put([]byte(content))
+				}
 				atomicCounterPut = atomicCounterPut + 1
 			}
 			log.Print("producer done")
@@ -299,22 +318,6 @@ func testMultithreading(t *testing.T, q SubscribeQueue) {
 		wg.Add(1)
 	}
 	//subscriber is a singleton
-	wg.Add(1)
-	cancellationChan := make(chan int, 1)
-	go func() {
-		q.Subscribe(func(p *PMessage) error {
-			atomicCounterGet = atomicCounterGet + 1
-			if atomicCounterGet%100 == 0 {
-				t.Log(atomicCounterGet)
-			}
-			if atomicCounterPut == (maxMsgs*workers) && atomicCounterGet >= (maxMsgs*workers) {
-				cancellationChan <- 1
-			}
-			return nil
-		})
-		<-cancellationChan
-		wg.Done()
-	}()
 	wg.Wait()
 }
 
@@ -326,50 +329,17 @@ func TestMultithreading(t *testing.T) {
 	defer q.Close()
 	defer os.Remove("test.db")
 
-	testMultithreading(t, q)
+	testMultithreading(100, 10, q)
 }
 
 func BenchmarkBasic(b *testing.B) {
-	queue, err := NewPQueue("test.db", 1000)
+	os.Remove("test.db")
+	q, err := NewPQueue("test.db", 10000)
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer queue.Close()
+	defer q.Close()
 	defer os.Remove("test.db")
 
-	maxMsgs := 10000
-	workers := 10
-	atomicCounterPut := 0
-	atomicCounterGet := 0
-
-	wg := sync.WaitGroup{}
-	//producers
-	for i := 0; i < workers; i++ {
-		go func() {
-			for j := 0; j < maxMsgs; j++ {
-				content := uuid.New().String()
-				queue.Put([]byte(content))
-				atomicCounterPut = atomicCounterPut + 1
-			}
-			log.Print("producer done")
-			wg.Done()
-
-		}()
-		wg.Add(1)
-	}
-	//subscriber is a singleton
-	wg.Add(1)
-	cancellationChan := make(chan int, 1)
-	go func() {
-		queue.Subscribe(func(p *PMessage) error {
-			atomicCounterGet = atomicCounterGet + 1
-			if atomicCounterPut == (maxMsgs*workers) && atomicCounterGet >= (maxMsgs*workers) {
-				cancellationChan <- 1
-			}
-			return nil
-		})
-		<-cancellationChan
-		wg.Done()
-	}()
-	wg.Wait()
+	testMultithreading(1000, 10, q)
 }

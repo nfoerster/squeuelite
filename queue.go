@@ -43,6 +43,7 @@ func NewPQueue(connStr string, maxsize int64) (*PQueue, error) {
 	if err != nil {
 		return nil, err
 	}
+	conn.SetMaxOpenConns(1)
 
 	lq := &PQueue{
 		conn:     conn,
